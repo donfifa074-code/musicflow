@@ -102,25 +102,25 @@
       {id:'road',name:'🚗 В дорогу',emoji:'🚗',tags:'driving,travel,road',bg:'linear-gradient(135deg,#fdcb6e,#f39c12)'},
     ];
     const container=$('mood-playlists');
-    try{
-      const results=await Promise.allSettled(moods.map(m=>api('/tracks/',{tags:m.tags,order:'popularity_total_desc',limit:'10'})));
-      let html='';
-      results.forEach((r,i)=>{
-        if(r.status==='fulfilled'&&r.value.results&&r.value.results.length){
-          html+=`<div class="mood-card" data-mood="${moods[i].id}"><div class="mood-cover"><div class="mood-gradient" style="background:${moods[i].bg}"><span class="mood-emoji">${moods[i].emoji}</span></div></div><div class="mood-info"><div class="mood-name">${moods[i].name.split(' ').slice(1).join(' ')}</div><div class="mood-count">${r.value.results.length} треков</div></div></div>`;
+    let html='';
+    for(const m of moods){
+      try{
+        const d=await api('/tracks/',{tags:m.tags,order:'popularity_total_desc',limit:'10'});
+        if(d.results&&d.results.length){
+          html+=`<div class="mood-card" data-mood="${m.id}"><div class="mood-cover"><div class="mood-gradient" style="background:${m.bg}"><span class="mood-emoji">${m.emoji}</span></div></div><div class="mood-info"><div class="mood-name">${m.name.split(' ').slice(1).join(' ')}</div><div class="mood-count">${d.results.length} треков</div></div></div>`;
+        }
+      }catch(e){console.error('Mood error:',m.id,e);}
+    }
+    container.innerHTML=html||'<p style="padding:20px;color:var(--text-muted)">Не удалось загрузить</p>';
+    container.querySelectorAll('.mood-card').forEach(card=>{
+      card.addEventListener('click',async()=>{
+        const mo=moods.find(x=>x.id===card.dataset.mood);
+        if(mo){
+          const d=await api('/tracks/',{tags:mo.tags,order:'popularity_total_desc',limit:'50'});
+          if(d.results){showScreen('search');$('search-input-2').value=mo.name;renderList('search-screen-list',d.results);$('search-screen-list').style.display='';$('search-empty').style.display='none';}
         }
       });
-      container.innerHTML=html||'<p style="padding:20px;color:var(--text-muted)">Не удалось загрузить</p>';
-      container.querySelectorAll('.mood-card').forEach(card=>{
-        card.addEventListener('click',async()=>{
-          const m=moods.find(x=>x.id===card.dataset.mood);
-          if(m){
-            const d=await api('/tracks/',{tags:m.tags,order:'popularity_total_desc',limit:'50'});
-            if(d.results){showScreen('search');$('search-input-2').value=m.name;renderList('search-screen-list',d.results);$('search-screen-list').style.display='';$('search-empty').style.display='none';}
-          }
-        });
-      });
-    }catch(e){container.innerHTML='<p style="padding:20px;color:var(--text-muted)">Ошибка загрузки</p>';}
+    });
   }
 
   async function searchTracks(q){
