@@ -1,5 +1,6 @@
 // ===== MusicFlow App =====
 // PWA Music Player using Jamendo API (free, legal music)
+// Создано специально для Павла Судника 🎵
 
 (function() {
   'use strict';
@@ -11,7 +12,7 @@
     queueIndex: -1,
     isPlaying: false,
     shuffle: false,
-    repeat: 0, // 0=off, 1=all, 1=one
+    repeat: 0,
     volume: 0.8,
     liked: JSON.parse(localStorage.getItem('mf_liked') || '[]'),
     playlists: JSON.parse(localStorage.getItem('mf_playlists') || '[]'),
@@ -20,9 +21,9 @@
     contextTrack: null
   };
 
-  // Jamendo API (free, no auth needed for basic use)
+  // Jamendo API
   const JAMENDO_API = 'https://api.jamendo.com/v3.0';
-  const CLIENT_ID = '2c9a11b9'; // public demo client
+  const CLIENT_ID = '2c9a11b9';
 
   // ===== DOM REFS =====
   const $ = id => document.getElementById(id);
@@ -80,9 +81,13 @@
     const url = new URL(`${JAMENDO_API}${endpoint}`);
     url.searchParams.set('client_id', CLIENT_ID);
     url.searchParams.set('format', 'json');
-    url.searchParams.set('limit', '20');
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    url.searchParams.set('limit', params.limit || '50');
+    url.searchParams.set('audioformat', 'mp32');
+    Object.entries(params).forEach(([k, v]) => {
+      if (k !== 'limit') url.searchParams.set(k, v);
+    });
     const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return res.json();
   }
 
@@ -90,10 +95,10 @@
     try {
       const data = await jamendoFetch('/tracks/', {
         order: 'popularity_total_desc',
-        audioformat: 'mp32'
+        limit: '30'
       });
       if (data.results && data.results.length) {
-        renderTrackCards('popular-tracks', data.results.slice(0, 10));
+        renderTrackCards('popular-tracks', data.results.slice(0, 15));
       }
     } catch (e) {
       console.error('Popular load error:', e);
@@ -103,17 +108,105 @@
 
   async function loadNewReleases() {
     try {
-      const data = await jamendoFetch('/tracks/', {
-        order: 'date_desc',
-        audioformat: 'mp32'
+      // Загружаем новинки из разных источников для разнообразия
+      const [newTracks, trending] = await Promise.all([
+        jamendoFetch('/tracks/', { order: 'date_desc', limit: '30' }),
+        jamendoFetch('/tracks/', { order: 'popularity_week_desc', limit: '20' })
+      ]);
+      
+      const results = [];
+      if (newTracks.results) results.push(...newTracks.results);
+      if (trending.results) results.push(...trending.results);
+      
+      // Убираем дубликаты
+      const seen = new Set();
+      const unique = results.filter(t => {
+        if (seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
       });
-      if (data.results && data.results.length) {
-        renderTrackList('new-tracks', data.results.slice(0, 15));
+      
+      if (unique.length) {
+        renderTrackList('new-tracks', unique.slice(0, 25));
       }
     } catch (e) {
       console.error('New releases error:', e);
       $('new-tracks').innerHTML = '<div class="empty-state"><p>Ошибка загрузки</p></div>';
     }
+  }
+
+  async function loadMoodPlaylists() {
+    const moods = [
+      { id: 'chill', name: '😌 Чилл', tags: 'chill,relax', order: 'popularity_total_desc' },
+      { id: 'workout', name: '💪 Спорт', tags: 'workout,energy', order: 'popularity_total_desc' },
+      { id: 'party', name: '🎉 Вечеринка', tags: 'party,dance', order: 'popularity_total_desc' },
+      { id: 'focus', name: '🎯 Фокус', tags: 'focus,study', order: 'popularity_total_desc' },
+      { id: 'sleep', name: '😴 Сон', tags: 'sleep,ambient', order: 'popularity_total_desc' },
+      { id: 'romantic', name: '💕 Романтика', tags: 'romantic,love', order: 'popularity_total_desc' },
+    ];
+
+    const container = $('mood-playlists');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+    try {
+      const results = await Promise.allSettled(
+        moods.map(m => jamendoFetch('/tracks/', { tags: m.tags, order: m.order, limit: '10' }))
+      );
+
+      let html = '';
+      results.forEach((result, i) => {
+        if (result.status === 'fulfilled' && result.value.results && result.value.results.length) {
+          const tracks = result.value.results.slice(0, 5);
+          html += `
+            <div class="mood-card" data-mood="${moods[i].id}">
+              <div class="mood-cover">
+                <div class="mood-gradient" style="background:${getMoodGradient(moods[i].id)}">
+                  <span class="mood-emoji">${moods[i].name.split(' ')[0]}</span>
+                </div>
+              </div>
+              <div class="mood-info">
+                <div class="mood-name">${moods[i].name.split(' ').slice(1).join(' ')}</div>
+                <div class="mood-count">${result.value.results.length} треков</div>
+              </div>
+            </div>
+          `;
+        }
+      });
+
+      container.innerHTML = html || '<div class="empty-state"><p>Не удалось загрузить</p></div>';
+
+      container.querySelectorAll('.mood-card').forEach(card => {
+        card.addEventListener('click', async () => {
+          const moodId = card.dataset.mood;
+          const mood = moods.find(m => m.id === moodId);
+          if (mood) {
+            const data = await jamendoFetch('/tracks/', { tags: mood.tags, order: mood.order, limit: '30' });
+            if (data.results) {
+              showScreen('search');
+              $('search-input-2').value = mood.name;
+              renderTrackList('search-screen-list', data.results);
+              $('search-screen-list').style.display = '';
+              $('search-empty').style.display = 'none';
+            }
+          }
+        });
+      });
+    } catch (e) {
+      console.error('Mood playlists error:', e);
+      container.innerHTML = '<div class="empty-state"><p>Ошибка загрузки</p></div>';
+    }
+  }
+
+  function getMoodGradient(id) {
+    const gradients = {
+      chill: 'linear-gradient(135deg, #00cec9, #0984e3)',
+      workout: 'linear-gradient(135deg, #e17055, #d63031)',
+      party: 'linear-gradient(135deg, #fdcb6e, #e17055)',
+      focus: 'linear-gradient(135deg, #6c5ce7, #a29bfe)',
+      sleep: 'linear-gradient(135deg, #2d3436, #636e72)',
+      romantic: 'linear-gradient(135deg, #fd79a8, #e84393)',
+    };
+    return gradients[id] || 'linear-gradient(135deg, #6c5ce7, #a29bfe)';
   }
 
   async function searchTracks(query) {
@@ -122,7 +215,7 @@
       const data = await jamendoFetch('/tracks/', {
         search: query,
         order: 'popularity_total_desc',
-        audioformat: 'mp32'
+        limit: '50'
       });
       return data.results || [];
     } catch (e) {
@@ -136,8 +229,7 @@
       const data = await jamendoFetch('/tracks/', {
         tags: genre,
         order: 'popularity_total_desc',
-        audioformat: 'mp32',
-        limit: '30'
+        limit: '50'
       });
       return data.results || [];
     } catch (e) {
@@ -204,7 +296,6 @@
       `;
     }).join('');
 
-    // Track click = play
     container.querySelectorAll('.track-item').forEach(item => {
       item.addEventListener('click', (e) => {
         if (e.target.closest('.track-action-btn')) return;
@@ -213,7 +304,6 @@
       });
     });
 
-    // Like buttons
     container.querySelectorAll('.like-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -222,7 +312,6 @@
       });
     });
 
-    // More buttons
     container.querySelectorAll('.more-btn').forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -244,11 +333,9 @@
     state.queue = queue;
     state.queueIndex = index;
 
-    // Add to recent
     state.recent = [track, ...state.recent.filter(t => trackId(t) !== trackId(track))].slice(0, 50);
     saveState();
 
-    // Set audio
     audio.src = track.audio;
     audio.volume = state.volume;
     audio.play().then(() => {
@@ -259,7 +346,6 @@
       showToast('Ошибка воспроизведения');
     });
 
-    // Show mini player
     miniPlayer.classList.add('visible');
     updateAllTrackLists();
   }
@@ -308,7 +394,6 @@
     const t = state.currentTrack;
     if (!t) return;
 
-    // Mini player
     $('mini-title').textContent = t.name || '—';
     $('mini-artist').textContent = t.artist_name || '—';
     if (t.image) {
@@ -318,7 +403,6 @@
       $('mini-img').style.display = 'none';
     }
 
-    // Full player
     $('player-title').textContent = t.name || '—';
     $('player-artist').textContent = t.artist_name || '—';
     if (t.image) {
@@ -330,7 +414,6 @@
       $('player-bg').style.backgroundImage = '';
     }
 
-    // Play/pause icons
     const playIconPath = state.isPlaying
       ? 'M6 4h4v16H6zM14 4h4v16h-4z'
       : 'M8 5v14l11-7z';
@@ -366,7 +449,6 @@
     showToast('Ошибка загрузки трека');
   });
 
-  // Progress bar seek
   $('progress-container').addEventListener('click', (e) => {
     if (!audio.duration) return;
     const rect = $('progress-container').getBoundingClientRect();
@@ -374,11 +456,32 @@
     audio.currentTime = pct * audio.duration;
   });
 
-  // Volume
+  // Volume controls
   $('volume-slider').addEventListener('input', (e) => {
     state.volume = e.target.value / 100;
     audio.volume = state.volume;
+    updateMiniVolumeIcon();
   });
+
+  $('mini-volume-slider').addEventListener('input', (e) => {
+    state.volume = e.target.value / 100;
+    audio.volume = state.volume;
+    $('volume-slider').value = e.target.value;
+    updateMiniVolumeIcon();
+  });
+
+  function updateMiniVolumeIcon() {
+    const vol = state.volume;
+    let icon;
+    if (vol === 0) {
+      icon = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
+    } else if (vol < 0.5) {
+      icon = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>';
+    } else {
+      icon = '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>';
+    }
+    $('mini-volume-icon').innerHTML = icon;
+  }
 
   // Player controls
   $('play-btn').addEventListener('click', togglePlay);
@@ -404,9 +507,8 @@
     showToast(msgs[state.repeat]);
   });
 
-  // Mini player opens full player
   miniPlayer.addEventListener('click', (e) => {
-    if (e.target.closest('.mini-controls') || e.target.closest('.mini-btn')) return;
+    if (e.target.closest('.mini-controls') || e.target.closest('.mini-btn') || e.target.closest('.mini-volume')) return;
     openFullPlayer();
   });
 
@@ -448,7 +550,6 @@
   setupSearch('search-input', 'search-results', 'search-results-section');
   setupSearch('search-input-2', 'search-screen-list', 'search-empty');
 
-  // Home search shows results section
   $('search-input').addEventListener('input', () => {
     const q = $('search-input').value.trim();
     $('search-results-section').style.display = q ? '' : 'none';
@@ -489,7 +590,6 @@
     const isLiked = isTrackLiked(track);
     $('ctx-like-text').textContent = isLiked ? 'Убрать из понравившихся' : 'Нравится';
 
-    // Position
     const x = Math.min(event.clientX, window.innerWidth - 220);
     const y = Math.min(event.clientY, window.innerHeight - 200);
     menu.style.left = x + 'px';
@@ -516,7 +616,6 @@
   $('ctx-play-next').addEventListener('click', () => {
     $('context-menu').classList.remove('active');
     if (state.contextTrack) {
-      // Insert after current
       const idx = state.queueIndex + 1;
       state.queue.splice(idx, 0, state.contextTrack);
       showToast('Добавлено в очередь');
@@ -585,7 +684,6 @@
     $('search-empty').style.display = 'none';
   }
 
-  // Create playlist modal
   $('create-playlist-btn').addEventListener('click', () => {
     $('playlist-modal').classList.add('active');
     $('playlist-name-input').value = '';
@@ -606,7 +704,6 @@
     showToast('Плейлист "' + name + '" создан');
   });
 
-  // Add to playlist modal
   function showAddToPlaylistModal(track) {
     if (!state.playlists.length) {
       showToast('Сначала создай плейлист');
@@ -642,7 +739,6 @@
     $('add-to-playlist-modal').classList.remove('active');
   });
 
-  // Close modals on overlay click
   document.querySelectorAll('.modal-overlay').forEach(overlay => {
     overlay.addEventListener('click', (e) => {
       if (e.target === overlay) overlay.classList.remove('active');
@@ -654,7 +750,6 @@
     $('lib-liked-count').textContent = state.liked.length;
     $('lib-playlist-count').textContent = state.playlists.length;
 
-    // Liked tracks
     const likedContainer = $('liked-tracks');
     if (state.liked.length) {
       renderTrackList('liked-tracks', state.liked);
@@ -667,10 +762,9 @@
         </div>`;
     }
 
-    // Recent tracks
     const recentContainer = $('recent-tracks');
     if (state.recent.length) {
-      renderTrackList('recent-tracks', state.recent.slice(0, 20));
+      renderTrackList('recent-tracks', state.recent.slice(0, 30));
     } else {
       recentContainer.innerHTML = `
         <div class="empty-state">
@@ -705,20 +799,11 @@
     $('queue-modal').classList.add('active');
   });
 
-  // Close queue on overlay
   $('queue-modal').addEventListener('click', (e) => {
     if (e.target === $('queue-modal')) $('queue-modal').classList.remove('active');
   });
 
-  // ===== PWA INSTALL =====
-  let deferredPrompt;
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    // Could show install button here
-  });
-
-  // ===== SERVICE WORKER =====
+  // ===== PWA =====
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
@@ -728,6 +813,7 @@
     audio.volume = state.volume;
     loadPopular();
     loadNewReleases();
+    loadMoodPlaylists();
     showScreen('home');
   }
 
