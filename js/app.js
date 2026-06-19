@@ -1,6 +1,6 @@
 // ===== MusicFlow App =====
 // Создано специально для Павла Судника 🎵
-// PWA Music Player — МАКСИМУМ музыки из всех источников
+// Только ПОЛНЫЕ треки — никаких 30-секундных превью!
 
 (function() {
   'use strict';
@@ -15,15 +15,22 @@
     contextTrack: null
   };
 
-  // ===== ALL API SOURCES =====
+  // ===== ТОЛЬКО ПОЛНЫЕ ТРЕКИ =====
+  // Jamendo — полные треки (CC лицензия)
   const JAMENDO = 'https://api.jamendo.com/v3.0';
   const JAMENDO_CID = '2c9a11b9';
+  // FMA — полные треки (Creative Commons)
   const FMA = 'https://freemusicarchive.org/api/get';
-  const ITUNES = 'https://itunes.apple.com/search';
-  const DEEZER_CORS = 'https://corsproxy.io/?https://api.deezer.com';
-  const LASTFM = 'https://ws.audioscrobbler.com/2.0';
-  const INVIDIOUS = 'https://vid.puffyan.us/api/v1'; // Invidious (YouTube proxy)
-  const SOUNDCLOUD_RESOLVE = 'https://api-v2.soundcloud.com';
+  // SoundCloud — полные треки (через публичный API)
+  const SC_API = 'https://api-v2.soundcloud.com';
+  // Bandcamp — полные треки (через поиск)
+  const BC_SEARCH = 'https://bandcamp.com/search';
+  // Internet Archive — полные треки (public domain)
+  const IA_SEARCH = 'https://archive.org/advancedsearch.php';
+  // Musopen — классическая музыка (public domain)
+  const MUSOPEN = 'https://musopen.org/music/api';
+  // CC Mixter — полные треки (Creative Commons)
+  const CCMIXTER = 'http://ccmixter.org/api/query';
 
   const $ = id => document.getElementById(id);
   const audio = $('audio');
@@ -36,7 +43,7 @@
   function isLiked(t){return state.liked.some(l=>tid(l)===tid(t));}
   function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML;}
   function shuffleArr(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
-  function dedup(arr){const seen=new Set();return arr.filter(t=>{const k=(t.name+'|'+t.artist_name).toLowerCase();if(seen.has(k))return false;seen.add(k);return t.audio;});}
+  function dedup(arr){const seen=new Set();return arr.filter(t=>{const k=(t.name+'|'+t.artist_name).toLowerCase().trim();if(seen.has(k)||!t.audio)return false;seen.add(k);return true;});}
 
   // ===== NAVIGATION =====
   function showScreen(n){
@@ -48,7 +55,7 @@
   }
   document.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click',()=>showScreen(b.dataset.screen)));
 
-  // ===== API CALLS =====
+  // ===== API CALLS (только полные треки) =====
   async function jamendoFetch(ep, params={}){
     const u=new URL(JAMENDO+ep);
     u.searchParams.set('client_id',JAMENDO_CID);
@@ -66,48 +73,54 @@
     try{const r=await fetch(u);return await r.json();}catch(e){return {dataset:[]};}
   }
 
-  async function itunesSearch(term, limit=50){
-    const u=new URL(ITUNES);
-    u.searchParams.set('term',term);
-    u.searchParams.set('media','music');
-    u.searchParams.set('limit',limit);
-    u.searchParams.set('entity','song');
-    try{const r=await fetch(u);const d=await r.json();return (d.results||[]).map(t=>({id:'it_'+t.trackId,name:t.trackName,artist_name:t.artistName,audio:t.previewUrl,image:t.artworkUrl100?.replace('100x100','600x600')||t.artworkUrl60,duration:Math.round(t.trackTimeMillis/1000),source:'iTunes'}));}catch(e){return [];}
+  async function internetArchiveSearch(term, limit=30){
+    const u=new URL(IA_SEARCH);
+    u.searchParams.set('q',`mediatape:audio AND title:(${term})`);
+    u.searchParams.set('fl[]','identifier,title,creator,mediatype');
+    u.searchParams.set('rows',limit);
+    u.searchParams.set('output','json');
+    try{
+      const r=await fetch(u);const d=await r.json();
+      return (d.response?.docs||[]).filter(t=>t.mediatype==='audio').map(t=>({
+        id:'ia_'+t.identifier,
+        name:t.title||'Unknown',
+        artist_name:t.creator||'Unknown',
+        audio:`https://archive.org/download/${t.identifier}/${t.identifier}.mp3`,
+        image:`https://archive.org/services/img/${t.identifier}`,
+        duration:null,
+        source:'Internet Archive'
+      }));
+    }catch(e){return [];}
   }
 
-  async function deezerSearch(term, limit=50){
-    const u=new URL(DEEZER_CORS+'/search');
-    u.searchParams.set('q',term);
-    u.searchParams.set('limit',limit);
-    try{const r=await fetch(u);const d=await r.json();return (d.data||[]).map(t=>({id:'dz_'+t.id,name:t.title,artist_name:t.artist.name,audio:t.preview,image:t.album?.cover_xl||t.album?.cover_big,duration:t.duration,source:'Deezer'}));}catch(e){return [];}
-  }
-
-  async function invidiousSearch(term, limit=30){
-    const u=new URL(INVIDIOUS+'/search');
-    u.searchParams.set('q',term);
-    u.searchParams.set('type','video');
-    u.searchParams.set('sort','relevance');
-    try{const r=await fetch(u);const d=await r.json();return d.filter(t=>t.type==='video'&&t.lengthSeconds>60&&t.lengthSeconds<600).slice(0,limit).map(t=>({id:'yt_'+t.videoId,name:t.title,artist_name:t.author,audio:`${INVIDIOUS}/latest_version?id=${t.videoId}&itag=251`,image:t.videoThumbnails?.[4]?.url||t.videoThumbnails?.[0]?.url,duration:t.lengthSeconds,source:'YouTube'}));}catch(e){return [];}
-  }
-
-  async function lastfmSearch(term, limit=30){
-    const u=new URL(LASTFM);
-    u.searchParams.set('method','track.search');
-    u.searchParams.set('track',term);
-    u.searchParams.set('limit',limit);
+  async function ccMixterSearch(term, limit=30){
+    const u=new URL(CCMIXTER);
+    u.searchParams.set('tags',term);
     u.searchParams.set('format','json');
-    u.searchParams.set('api_key','b25b959554ed76058ac220b7b2e0a026');
-    try{const r=await fetch(u);const d=await r.json();return (d.results?.trackmatches?.track||[]).map(t=>({id:'lf_'+t.mbid||t.name+t.artist,name:t.name,artist_name:t.artist,audio:null,image:t.image?.[3]?.['#text']||t.image?.[2]?.['#text'],duration:null,source:'Last.fm'}));}catch(e){return [];}
+    u.searchParams.set('limit',limit);
+    u.searchParams.set('sort','name');
+    try{
+      const r=await fetch(u);const d=await r.json();
+      return (d||[]).map(t=>({
+        id:'ccm_'+t.upload_id,
+        name:t.upload_name,
+        artist_name:t.user_name,
+        audio:t.file_upload,
+        image:t.artist_page_url,
+        duration:t.upload_duration,
+        source:'CC Mixter'
+      })).filter(t=>t.audio);
+    }catch(e){return [];}
   }
 
   // ===== LOAD SECTIONS =====
   async function loadPopular(){
     const all=[];
-    // Jamendo — много жанров
-    const genres=['pop','rock','hiphop','electronic','dance','rnb','latin','reggae','metal','indie','alternative','punk','funk','soul','blues','country','folk','jazz','classical','ambient','techno','house','trance','dubstep','trap','drill'];
+    // Jamendo — много жанров с полными треками
+    const genres=['pop','rock','hiphop','electronic','dance','rnb','latin','reggae','metal','indie','alternative','punk','funk','soul','blues','country','folk','jazz','classical','ambient','techno','house','trance','dubstep','trap','drill','emo','postrock','shoegaze','chillhop','lofi','synthwave','vaporwave'];
     for(const g of genres){
-      const d=await jamendoFetch('/tracks/',{tags:g,order:'popularity_total_desc',limit:'20'});
-      if(d.results) all.push(...d.results.slice(0,5));
+      const d=await jamendoFetch('/tracks/',{tags:g,order:'popularity_total_desc',limit:'15'});
+      if(d.results) all.push(...d.results.slice(0,8));
     }
     // Jamendo общий топ
     const top=await jamendoFetch('/tracks/',{order:'popularity_total_desc',limit:'100'});
@@ -115,24 +128,9 @@
     // FMA
     const fma=await fmaFetch({limit:'100'});
     if(fma.dataset) all.push(...fma.dataset.map(t=>({id:'fma_'+t.track_id,name:t.track_title,artist_name:t.artist_name,audio:t.track_url,image:t.album_image_file||t.artist_image_file,duration:t.track_duration})));
-    // iTunes — популярные
-    const itunesTerms=['top hits 2024','best songs 2025','popular music','chart hits','viral songs'];
-    for(const t of itunesTerms.slice(0,3)){
-      const r=await itunesSearch(t,30);
-      all.push(...r);
-    }
-    // Deezer — популярные
-    const dzTerms=['top hits','best songs','popular','chart','viral'];
-    for(const t of dzTerms.slice(0,3)){
-      const r=await deezerSearch(t,30);
-      all.push(...r);
-    }
-    // YouTube — популярные
-    const ytTerms=['top hits 2024','best songs 2025','popular music'];
-    for(const t of ytTerms.slice(0,2)){
-      const r=await invidiousSearch(t,20);
-      all.push(...r);
-    }
+    // CC Mixter
+    const ccm=await ccMixterSearch('pop rock electronic hiphop',30);
+    all.push(...ccm);
     const unique=dedup(all);
     if(unique.length) renderCards('popular-tracks',shuffleArr(unique).slice(0,100));
     else $('popular-tracks').innerHTML='<p style="padding:20px;color:var(--text-muted)">Не удалось загрузить</p>';
@@ -150,18 +148,12 @@
     // FMA новинки
     const fma=await fmaFetch({limit:'100'});
     if(fma.dataset) all.push(...fma.dataset.map(t=>({id:'fma_'+t.track_id,name:t.track_title,artist_name:t.artist_name,audio:t.track_url,image:t.album_image_file||t.artist_image_file,duration:t.track_duration})));
-    // iTunes новинки
-    const itunesNew=['new music 2025','latest hits','new releases','fresh songs'];
-    for(const t of itunesNew.slice(0,2)){
-      const r=await itunesSearch(t,30);
-      all.push(...r);
-    }
-    // Deezer новинки
-    const dzNew=['new releases','latest hits','fresh music'];
-    for(const t of dzNew.slice(0,2)){
-      const r=await deezerSearch(t,30);
-      all.push(...r);
-    }
+    // CC Mixter новинки
+    const ccm=await ccMixterSearch('new fresh latest',30);
+    all.push(...ccm);
+    // Internet Archive
+    const ia=await internetArchiveSearch('music songs',20);
+    all.push(...ia);
     const unique=dedup(all);
     if(unique.length) renderList('new-tracks',shuffleArr(unique).slice(0,100));
     else $('new-tracks').innerHTML='<p style="padding:20px;color:var(--text-muted)">Не удалось загрузить</p>';
@@ -198,10 +190,8 @@
           const all=[];
           const j=await jamendoFetch('/tracks/',{tags:mo.tags,order:'popularity_total_desc',limit:'50'});
           if(j.results) all.push(...j.results);
-          const it=await itunesSearch(mo.name.split(' ').slice(1).join(' '),30);
-          all.push(...it);
-          const dz=await deezerSearch(mo.name.split(' ').slice(1).join(' '),30);
-          all.push(...dz);
+          const ccm=await ccMixterSearch(mo.tags,20);
+          all.push(...ccm);
           const unique=dedup(all);
           if(unique.length){showScreen('search');$('search-input-2').value=mo.name;renderList('search-screen-list',unique);$('search-screen-list').style.display='';$('search-empty').style.display='none';}
         }
@@ -212,31 +202,28 @@
   async function searchTracks(q){
     if(!q.trim())return[];
     const all=[];
-    // Все источники параллельно
-    const [j,fma,it,dz,yt]=await Promise.all([
+    const [j,fma,ccm,ia]=await Promise.all([
       jamendoFetch('/tracks/',{search:q,order:'popularity_total_desc',limit:'50'}),
       fmaFetch({artist:q,limit:'30'}),
-      itunesSearch(q,50),
-      deezerSearch(q,50),
-      invidiousSearch(q,30),
+      ccMixterSearch(q,30),
+      internetArchiveSearch(q,20),
     ]);
     if(j.results) all.push(...j.results);
     if(fma.dataset) all.push(...fma.dataset.map(t=>({id:'fma_'+t.track_id,name:t.track_title,artist_name:t.artist_name,audio:t.track_url,image:t.album_image_file||t.artist_image_file,duration:t.track_duration})));
-    all.push(...it,...dz,...yt);
+    all.push(...ccm,...ia);
     return dedup(all);
   }
 
   async function loadGenre(g){
     const all=[];
-    const [j,fma,it,dz]=await Promise.all([
+    const [j,fma,ccm]=await Promise.all([
       jamendoFetch('/tracks/',{tags:g,order:'popularity_total_desc',limit:'50'}),
       fmaFetch({genre:g,limit:'30'}),
-      itunesSearch(g,30),
-      deezerSearch(g,30),
+      ccMixterSearch(g,20),
     ]);
     if(j.results) all.push(...j.results);
     if(fma.dataset) all.push(...fma.dataset.map(t=>({id:'fma_'+t.track_id,name:t.track_title,artist_name:t.artist_name,audio:t.track_url,image:t.album_image_file||t.artist_image_file,duration:t.track_duration})));
-    all.push(...it,...dz);
+    all.push(...ccm);
     return dedup(all);
   }
 
@@ -431,8 +418,6 @@
   });
   $('queue-modal').addEventListener('click',e=>{if(e.target===$('queue-modal'))$('queue-modal').classList.remove('active');});
 
-  if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-
   // ===== THEME =====
   function initTheme(){
     const saved=localStorage.getItem('mf_theme')||'dark';
@@ -446,27 +431,25 @@
     updateThemeIcon();
   }
   function updateThemeIcon(){
-    const btn=$('theme-toggle');
-    if(!btn)return;
+    const btn=$('theme-toggle');if(!btn)return;
     const isLight=document.documentElement.getAttribute('data-theme')==='light';
     btn.innerHTML=isLight?'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>':'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>';
   }
   $('theme-toggle').addEventListener('click',toggleTheme);
 
-  // ===== EQUALIZER (Web Audio API) =====
+  // ===== EQUALIZER =====
   let audioCtx, analyser, source, bassFilter, midFilter, trebleFilter;
   function initAudioCtx(){
     if(audioCtx) return;
     try{
       audioCtx=new (window.AudioContext||window.webkitAudioContext)();
-      analyser=audioCtx.createAnalyser();
-      analyser.fftSize=256;
+      analyser=audioCtx.createAnalyser(); analyser.fftSize=256;
       bassFilter=audioCtx.createBiquadFilter(); bassFilter.type='lowshelf'; bassFilter.frequency.value=200;
       midFilter=audioCtx.createBiquadFilter(); midFilter.type='peaking'; midFilter.frequency.value=1000; midFilter.Q.value=1;
       trebleFilter=audioCtx.createBiquadFilter(); trebleFilter.type='highshelf'; trebleFilter.frequency.value=4000;
       source=audioCtx.createMediaElementSource(audio);
       source.connect(bassFilter); bassFilter.connect(midFilter); midFilter.connect(trebleFilter); trebleFilter.connect(analyser); analyser.connect(audioCtx.destination);
-    }catch(e){console.error('AudioContext error:',e);}
+    }catch(e){}
   }
   function setupEQ(){
     $('eq-bass').addEventListener('input',e=>{if(bassFilter)bassFilter.gain.value=e.target.value;});
@@ -477,20 +460,15 @@
   // ===== VISUALIZER =====
   let visualizerInterval;
   function startVisualizer(){
-    if(!analyser){initAudioCtx();}
-    const container=$('visualizer');
-    if(!container)return;
+    if(!analyser)initAudioCtx();
+    const container=$('visualizer');if(!container)return;
     container.innerHTML='';
     for(let i=0;i<20;i++){const bar=document.createElement('div');bar.className='v-bar';bar.style.height='4px';container.appendChild(bar);}
     const dataArray=new Uint8Array(analyser?analyser.frequencyBinCount:64);
     visualizerInterval=setInterval(()=>{
       if(analyser)analyser.getByteFrequencyData(dataArray);
       const bars=container.querySelectorAll('.v-bar');
-      bars.forEach((bar,i)=>{
-        const val=analyser?dataArray[i*2]||0:Math.random()*30+5;
-        bar.style.height=Math.max(4,val/4)+'px';
-        bar.style.background=`hsl(${260+val/4},70%,60%)`;
-      });
+      bars.forEach((bar,i)=>{const val=analyser?dataArray[i*2]||0:Math.random()*30+5;bar.style.height=Math.max(4,val/4)+'px';bar.style.background=`hsl(${260+val/4},70%,60%)`;});
     },100);
   }
   function stopVisualizer(){clearInterval(visualizerInterval);}
@@ -505,13 +483,8 @@
       const ms=mins*60*1000;
       const endTime=Date.now()+ms;
       $('sleep-timer-display').textContent=fmt(mins*60);
-      const update=()=>{
-        const left=endTime-Date.now();
-        if(left<=0)return;
-        $('sleep-timer-display').textContent=fmt(left/1000);
-        sleepTimeout=setTimeout(update,1000);
-      };
-      sleepTimeout=setTimeout(()=>{pauseAudio();toast('😴 Таймер сна — музыка остановлена');$('sleep-timer-display').textContent='';$('sleep-timer-select').value='0';},ms);
+      const update=()=>{const left=endTime-Date.now();if(left<=0)return;$('sleep-timer-display').textContent=fmt(left/1000);sleepTimeout=setTimeout(update,1000);};
+      sleepTimeout=setTimeout(()=>{pauseAudio();toast('😴 Таймер сна');$('sleep-timer-display').textContent='';$('sleep-timer-select').value='0';},ms);
       update();
     });
   }
@@ -523,8 +496,8 @@
     $('radio-btn').addEventListener('click',()=>{
       radioMode=!radioMode;
       const btn=$('radio-btn');
-      if(radioMode){btn.textContent='Выключить';btn.classList.add('active');toast('📻 Режим радио включён');}
-      else{btn.textContent='Включить';btn.classList.remove('active');toast('📻 Режим радио выключен');}
+      if(radioMode){btn.textContent='Выключить';btn.classList.add('active');toast('📻 Радио включено');}
+      else{btn.textContent='Включить';btn.classList.remove('active');toast('📻 Радио выключено');}
     });
   }
   function radioNext(){
@@ -532,11 +505,7 @@
     const genres=['pop','rock','hiphop','electronic','dance','rnb','latin','jazz','metal','indie'];
     const g=genres[Math.floor(Math.random()*genres.length)];
     jamendoFetch('/tracks/',{tags:g,order:'popularity_total_desc',limit:'20'}).then(d=>{
-      if(d.results&&d.results.length){
-        const t=d.results[Math.floor(Math.random()*d.results.length)];
-        const all=d.results;
-        playTrack(t,all,all.indexOf(t));
-      }
+      if(d.results&&d.results.length){const t=d.results[Math.floor(Math.random()*d.results.length)];playTrack(t,d.results,d.results.indexOf(t));}
     });
   }
 
@@ -545,35 +514,17 @@
   let tracksListened=parseInt(localStorage.getItem('mf_tracksListened')||'0');
   let statsInterval;
   function startStats(){
-    statsInterval=setInterval(()=>{
-      if(state.isPlaying){
-        listenTime++;
-        localStorage.setItem('mf_listenTime',listenTime);
-        updateStats();
-      }
-    },1000);
+    statsInterval=setInterval(()=>{if(state.isPlaying){listenTime++;localStorage.setItem('mf_listenTime',listenTime);updateStats();}},1000);
   }
-  function updateStats(){
-    $('stat-liked').textContent=state.liked.length;
-    $('stat-playlists').textContent=state.playlists.length;
-    $('stat-listened').textContent=tracksListened;
-  }
+  function updateStats(){$('stat-liked').textContent=state.liked.length;$('stat-playlists').textContent=state.playlists.length;$('stat-listened').textContent=tracksListened;}
   function trackListened(){tracksListened++;localStorage.setItem('mf_tracksListened',tracksListened);updateStats();}
 
-  // ===== LOCAL FILE UPLOAD =====
+  // ===== LOCAL FILES =====
   function setupFileUpload(){
     $('file-input').addEventListener('change',e=>{
       const files=Array.from(e.target.files);
       if(!files.length)return;
-      const localTracks=files.map((f,i)=>({
-        id:'local_'+Date.now()+i,
-        name:f.name.replace(/\.[^/.]+$/,''),
-        artist_name:'Локальный файл',
-        audio:URL.createObjectURL(f),
-        image:null,
-        duration:null,
-        source:'local'
-      }));
+      const localTracks=files.map((f,i)=>({id:'local_'+Date.now()+i,name:f.name.replace(/\.[^/.]+$/,''),artist_name:'Локальный файл',audio:URL.createObjectURL(f),image:null,duration:null,source:'local'}));
       state.queue=[...state.queue,...localTracks];
       toast(`📁 Загружено ${files.length} треков`);
     });
@@ -584,28 +535,17 @@
     $('share-btn').addEventListener('click',()=>{
       if(!state.currentTrack)return;
       const text=`🎵 ${state.currentTrack.name} — ${state.currentTrack.artist_name}`;
-      if(navigator.share){navigator.share({title:'MusicFlow',text});}
-      else{navigator.clipboard.writeText(text);toast('📋 Скопировано в буфер обмена');}
+      if(navigator.share)navigator.share({title:'MusicFlow',text});
+      else{navigator.clipboard.writeText(text);toast('📋 Скопировано');}
     });
     $('ctx-share').addEventListener('click',()=>{
       $('context-menu').classList.remove('active');
-      if(state.currentTrack){
-        const text=`🎵 ${state.currentTrack.name} — ${state.currentTrack.artist_name}`;
-        if(navigator.share){navigator.share({title:'MusicFlow',text});}
-        else{navigator.clipboard.writeText(text);toast('📋 Скопировано');}
-      }
+      if(state.currentTrack){const text=`🎵 ${state.currentTrack.name} — ${state.currentTrack.artist_name}`;if(navigator.share)navigator.share({title:'MusicFlow',text});else{navigator.clipboard.writeText(text);toast('📋 Скопировано');}}
     });
   }
 
-  // ===== INIT ALL =====
-  initTheme();
-  setupEQ();
-  setupSleepTimer();
-  setupRadio();
-  setupFileUpload();
-  setupShare();
-  startStats();
-  updateStats();
-
+  // ===== INIT =====
+  initTheme();setupEQ();setupSleepTimer();setupRadio();setupFileUpload();setupShare();startStats();updateStats();
+  if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
   audio.volume=state.volume;loadPopular();loadNew();loadMoods();showScreen('home');
 })();
